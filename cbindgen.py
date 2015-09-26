@@ -1,5 +1,5 @@
-#/usr/bin/env python2
-import sys, StringIO, clang.cindex
+#!/usr/bin/env python2
+import sys, os, StringIO, clang.cindex
 
 type_conv = {
         clang.cindex.TypeKind.VOID:            'void',
@@ -32,6 +32,9 @@ def is_array (t):
     return t.kind is clang.cindex.TypeKind.CONSTANTARRAY or \
             t.kind is clang.cindex.TypeKind.INCOMPLETEARRAY
 
+def is_record (t):
+    return t.kind is clang.cindex.TypeKind.RECORD
+
 def can_translate (t):
     is_pointer = t.kind is clang.cindex.TypeKind.POINTER
     is_enum = t.kind is clang.cindex.TypeKind.ENUM
@@ -61,8 +64,10 @@ def translate_type (t):
             return 'c-pointer'
 
     elif is_enum:
-        # The 'enum' is already into the 'spelling' heh
-        return '(enum "{0}")'.format(t.spelling[5:])
+        if t.spelling.startswith('enum '):
+            return '(enum "{0}")'.format(t.spelling[5:])
+        else:
+            return 'int'
 
     if t.kind in type_conv:
         return type_conv[t.kind]
@@ -81,9 +86,11 @@ def parse_fun (w, fun):
     args = [resolve_type(x.type) for x in fun.get_arguments ()]
     ret_type = resolve_type(fun.result_type)
 
-    # Check whether we can resolve the argument types and the return one
+    # Check whether we can resolve the argument types and the return one.
+    # This returns False if the function passes structs by value
     v = can_translate(ret_type) and all(can_translate(x) for x in args)
     if v == False:
+        # print([x.kind.spelling for x in args])
         print('Cannot translate the function {0}: Type error'.format(fun.spelling))
         return
 
@@ -133,19 +140,31 @@ def parse_record (w, rec):
 def parse_enum (w, enu):
     assert(enu.kind is clang.cindex.CursorKind.ENUM_DECL)
 
-    base_name = lispize_name(enu.spelling)
-    if base_name == '':
-        return
+    items = [item.spelling for item in enu.get_children ()]
+    prefix = os.path.commonprefix(items)
+
+    if enu.spelling == '':
+        # Anonymous enum
+        # Use the longest common prefix as name
+        if prefix == '':
+            return
+
+        base_name = prefix.rstrip(' _')
+    else:
+        base_name = enu.spelling
+
+    base_name = lispize_name(base_name)
+
+    # Make the enum names even nicer by stripping the common prefix
+    items_name = [x[len(prefix):] for x in items]
 
     # What type the enum maps to ?
     # XXX : Currently not used, we assume it's always an int
     enum_type = resolve_type(enu.enum_type)
 
-    items = [item.spelling for item in enu.get_children ()]
-
     w.write('(define-foreign-enum-type ({0} int)\n  ({0}->int int->{0})\n{1})\n'.format(
         base_name, # Enum name
-        '\n'.join(['  (({0}) {1})'.format(lispize_name(x), x) for x in items])))
+        '\n'.join(['  (({0}) {1})'.format(lispize_name(y), x) for (x,y) in zip(items, items_name)])))
 
 def node_is_fun (x):
     return x.kind is clang.cindex.CursorKind.FUNCTION_DECL and \
@@ -167,8 +186,8 @@ def do (path):
     fun_decls = filter(node_is_fun, nodes)
     enum_decls = filter(node_is_enum, nodes)
 
-    for r in record_decls:
-        parse_record(out, r)
+    # for r in record_decls:
+    #     parse_record(out, r)
 
     for f in fun_decls:
         parse_fun(out, f)
