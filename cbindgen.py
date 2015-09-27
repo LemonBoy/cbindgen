@@ -75,6 +75,13 @@ def translate_type (t):
     # Can't reach this
     raise Exception('Unknown type {0}'.format(t.kind.spelling))
 
+def fun_has_attribute (fun, attr):
+    for ch in fun.get_children():
+        if (ch.kind.is_attribute() and ch.kind.is_unexposed()):
+            tokens = list(ch.get_tokens())
+            if len(tokens) > 0:
+                return tokens[0].spelling == attr
+
 def parse_fun (w, fun):
     assert(fun.kind is clang.cindex.CursorKind.FUNCTION_DECL)
 
@@ -85,6 +92,10 @@ def parse_fun (w, fun):
     # Thaw the iterator so that we can use len() on it
     args = [resolve_type(x.type) for x in fun.get_arguments ()]
     ret_type = resolve_type(fun.result_type)
+    is_deprecated = fun_has_attribute(fun, 'deprecated')
+
+    if is_deprecated != True:
+        return
 
     # Check whether we can resolve the argument types and the return one.
     # This returns False if the function passes structs by value
@@ -185,6 +196,9 @@ def do (path):
     record_decls = filter(node_is_record, nodes)
     fun_decls = filter(node_is_fun, nodes)
     enum_decls = filter(node_is_enum, nodes)
+
+    out.write('(import foreign)\n')
+    out.write('(use lolevel foreign foreigners)\n')
 
     # for r in record_decls:
     #     parse_record(out, r)
