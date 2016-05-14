@@ -94,7 +94,7 @@ def parse_fun (w, fun):
     ret_type = resolve_type(fun.result_type)
     is_deprecated = fun_has_attribute(fun, 'deprecated')
 
-    if is_deprecated != True:
+    if is_deprecated:
         return
 
     # Check whether we can resolve the argument types and the return one.
@@ -127,8 +127,8 @@ def parse_record (w, rec):
     # constant size or an empty one) we mark it as complex
     def discriminate (x):
         return x in [clang.cindex.TypeKind.CONSTANTARRAY,
-                clang.cindex.TypeKind.INCOMPLETEARRAY,
-                clang.cindex.TypeKind.RECORD]
+                     clang.cindex.TypeKind.INCOMPLETEARRAY,
+                     clang.cindex.TypeKind.RECORD]
     fields = {x.spelling: resolve_type(x.type) for x in rec.type.get_fields()}
     is_complex = any(discriminate(v.kind) for (_, v) in fields.items()) 
 
@@ -138,10 +138,10 @@ def parse_record (w, rec):
 
     args = ''
     for (k,v) in fields.items():
-        args += '  ({0} {1}-{2} {1}-{2}-set!)\n'.format(
+        args += '  ({0} {1} {2}-{1} {2}-{1}-set!)\n'.format(
                 translate_type(v),
-                base_name,
-                lispize_name(k))
+                lispize_name(k),
+                base_name)
 
     w.write('(define-foreign-record-type ({0} "{1}")\n{2})\n'.format(
         base_name,
@@ -151,8 +151,17 @@ def parse_record (w, rec):
 def parse_enum (w, enu):
     assert(enu.kind is clang.cindex.CursorKind.ENUM_DECL)
 
-    items = [item.spelling for item in enu.get_children ()]
-    prefix = os.path.commonprefix(items)
+    values = list(enu.get_children ())
+    values_name = [x.spelling for x in values]
+
+    # One-value enums are output as constants
+    if len(values) < 2:
+        w.write('(define-constant *{0}* {1})\n'.format(
+            lispize_name(values_name[0]),
+            values[0].enum_value))
+        return
+
+    prefix = os.path.commonprefix(values_name)
 
     if enu.spelling == '':
         # Anonymous enum
@@ -167,7 +176,7 @@ def parse_enum (w, enu):
     base_name = lispize_name(base_name)
 
     # Make the enum names even nicer by stripping the common prefix
-    items_name = [x[len(prefix):] for x in items]
+    items_name = [x[len(prefix):] for x in values_name]
 
     # What type the enum maps to ?
     # XXX : Currently not used, we assume it's always an int
@@ -175,7 +184,8 @@ def parse_enum (w, enu):
 
     w.write('(define-foreign-enum-type ({0} int)\n  ({0}->int int->{0})\n{1})\n'.format(
         base_name, # Enum name
-        '\n'.join(['  (({0}) {1})'.format(lispize_name(y), x) for (x,y) in zip(items, items_name)])))
+        '\n'.join(['  (({0}) {1})'.format(lispize_name(y), x) \
+                for (x,y) in zip(values_name, items_name)])))
 
 def node_is_fun (x):
     return x.kind is clang.cindex.CursorKind.FUNCTION_DECL and \
@@ -191,23 +201,19 @@ def do (path):
 
     out = StringIO.StringIO()
 
-    nodes = list(tu.cursor.get_children())
-
-    record_decls = filter(node_is_record, nodes)
-    fun_decls = filter(node_is_fun, nodes)
-    enum_decls = filter(node_is_enum, nodes)
-
     out.write('(import foreign)\n')
     out.write('(use lolevel foreign foreigners)\n')
 
-    # for r in record_decls:
-    #     parse_record(out, r)
+    for node in tu.cursor.get_children():
+        if str(node.location.file) != path:
+            continue
 
-    for f in fun_decls:
-        parse_fun(out, f)
-
-    for e in enum_decls:
-        parse_enum(out, e)
+        if   node_is_fun(node):
+            parse_fun(out, node)
+        elif node_is_record(node):
+            parse_record(out, node)
+        elif node_is_enum(node):
+            parse_enum(out, node)
 
     print(out.getvalue())
 
